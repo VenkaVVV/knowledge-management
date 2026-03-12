@@ -6,7 +6,7 @@
 
 ### 1. 环境准备
 
-编辑 `.env` 文件，填入你的 OpenAI baseurl 和 API Key：
+编辑 `.env` 文件，填入你的 OpenAI baseurl 和 API Key
 当然我这个版本是配合我的proxy项目使用的，只需要填baseurl为proxy项目启动的代理地址就好
 
 ### 2. 后端启动
