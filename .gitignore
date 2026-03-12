@@ -1,0 +1,13 @@
+.env
+data/
+.claude
+node_modules/
+__pycache__/
+.next/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.DS_Store
+*.log

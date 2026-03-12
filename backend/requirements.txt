@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+pdfplumber
+python-docx
+langchain-text-splitters
+rank-bm25
+scikit-learn
+numpy
+openai
+jieba
+qdrant-client
+python-dotenv
+requests
