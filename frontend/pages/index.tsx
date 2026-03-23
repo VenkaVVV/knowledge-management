@@ -13,6 +13,7 @@ const users = [
   { id: 'user_001', name: '柜员-张三', role: '柜员' },
   { id: 'user_002', name: '客服-李四', role: '客服' },
   { id: 'user_003', name: '审批岗-王五', role: '审批岗' },
+  { id: 'user_004', name: '客户-孙兴', role: '客户' },
 ]
 
 export default function Home() {

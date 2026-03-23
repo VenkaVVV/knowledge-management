@@ -253,29 +253,79 @@ def get_all_insights(user_id: str, limit: int=5) -> List[dict]:
 
 
 ## Layer2：事实库
-def search_facts(user_id: str, query: str, 
+def search_facts(user_id: str, query: str,
                  days: int=30) -> List[dict]:
+    """
+    改进的事实检索函数，支持多种检索策略：
+    1. 关键词匹配 entity 字段
+    2. 内容模糊匹配 fact_content
+    3. 时间权重（最近的事实优先）
+    """
     entities = jieba.analyse.extract_tags(query, topK=3)
-    if not entities:
-        return []
-    placeholders = ",".join("?" * len(entities))
     conn = sqlite3.connect(SQLITE_PATH)
-    rows = conn.execute(f"""
-        SELECT id, entity, fact_content, created_at FROM facts
-        WHERE user_id=? AND entity IN ({placeholders})
-        AND created_at > datetime('now', '-{days} days')
-        AND weight > 0.5
-        ORDER BY last_accessed DESC LIMIT 5
-    """, (user_id, *entities)).fetchall()
+
+    # 策略1: 关键词匹配 entity
+    entity_results = []
+    if entities:
+        placeholders = ",".join("?" * len(entities))
+        entity_results = conn.execute(f"""
+            SELECT id, entity, fact_content, created_at FROM facts
+            WHERE user_id=? AND entity IN ({placeholders})
+            AND created_at > datetime('now', '-{days} days')
+            AND weight > 0.5
+            ORDER BY last_accessed DESC LIMIT 5
+        """, (user_id, *entities)).fetchall()
+
+    # 策略2: 内容模糊匹配（针对"上次咨询"、"之前"等场景）
+    content_keywords = []
+    if "上次" in query or "之前" in query or "刚才" in query or "咨询" in query:
+        # 提取更多关键词用于内容搜索
+        content_keywords = jieba.analyse.extract_tags(query, topK=5)
+
+    content_results = []
+    if content_keywords:
+        # 构建 LIKE 查询条件
+        like_conditions = " OR ".join(["fact_content LIKE ?" for _ in content_keywords])
+        like_params = [f"%{kw}%" for kw in content_keywords]
+        content_results = conn.execute(f"""
+            SELECT id, entity, fact_content, created_at FROM facts
+            WHERE user_id=? AND ({like_conditions})
+            AND created_at > datetime('now', '-{days} days')
+            AND weight > 0.5
+            ORDER BY created_at DESC LIMIT 5
+        """, (user_id, *like_params)).fetchall()
+
+    # 策略3: 如果前两种都没结果，返回最近的事实（兜底策略）
+    fallback_results = []
+    if not entity_results and not content_results:
+        fallback_results = conn.execute(f"""
+            SELECT id, entity, fact_content, created_at FROM facts
+            WHERE user_id=?
+            AND created_at > datetime('now', '-{days} days')
+            AND weight > 0.5
+            ORDER BY created_at DESC LIMIT 3
+        """, (user_id,)).fetchall()
+
+    # 合并结果并去重
+    all_results = entity_results + content_results + fallback_results
+    seen_ids = set()
+    unique_results = []
+    for row in all_results:
+        if row[0] not in seen_ids:
+            seen_ids.add(row[0])
+            unique_results.append(row)
+
+    # 更新访问记录
     now = datetime.now().isoformat()
-    for row in rows:
-        conn.execute("""UPDATE facts SET 
+    for row in unique_results[:5]:  # 最多返回5条
+        conn.execute("""UPDATE facts SET
             last_accessed=?, access_count=access_count+1
             WHERE id=?""", (now, row[0]))
     conn.commit()
     conn.close()
+
     return [{"entity":r[1],"fact_content":r[2],"created_at":r[3]}
-            for r in rows]
+            for r in unique_results[:5]]
 
 
 def extract_facts(user_id: str, session_id: str,
@@ -287,13 +337,14 @@ def extract_facts(user_id: str, session_id: str,
         resp = client.chat.completions.create(
             model=CONFIG["chat_model"],
             messages=[{"role":"user","content":
-                f"从以下对话中提取具体发生的事件、用户遇到的问题、用户的反馈意见。\n"
+                f"从以下对话中提取具体发生的事件、用户遇到的问题、用户的反馈意见、用户的购买/决策意图。\n"
                 f"要求：\n"
                 f"1. 实体必须是业务对象，如：提前还款、开户流程、贷款审批、某个产品名称\n"
                 f"   不能是'用户'这种泛指\n"
                 f"2. 事实必须是具体发生的事情，如：用户反映XX有问题、用户遇到XX报错\n"
                 f"   不能是用户的身份信息或岗位描述\n"
-                f"3. 如果对话中没有具体事件，返回空数组[]\n"
+                f"3. 当对话中出现\"买不了\"\"再等等\"\"再想想\"\"暂时不考虑\"\"暂缓购买\"等表述时，必须提取为事实，记录用户对哪个产品暂缓购买/考虑，以及原因\n"
+                f"4. 如果对话中没有具体事件，返回空数组[]\n"
                 f"   宁可返回空，也不要编造或提取无意义的内容\n"
                 f"返回JSON格式：\n"
                 f"[{{\"entity\":\"业务对象名\",\"fact\":\"具体发生的事情\"}}]\n"
